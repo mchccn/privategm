@@ -1,1 +1,1 @@
-# bridge bot
+# private games host bot
