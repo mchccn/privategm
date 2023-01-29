@@ -1,169 +1,172 @@
-import { ChannelType, Client, Collection, TextChannel } from "discord.js";
 import "dotenv/config";
-import { readdir } from "fs/promises";
 import { createBot } from "mineflayer";
-import { join } from "path";
-import { Stream } from "stream";
-import { PING_ON_JOIN_NOTIFICATIONS } from "./commands/pingonjoin.js";
-import * as CONSTANTS from "./constants.js";
-import { IMGUR, ROOT_DIR } from "./constants.js";
-import { discordMessageAsPlainText } from "./formatting.js";
-import type { CommandContext, PatternContext } from "./types.js";
+import { createInterface } from "readline";
 
-const discord = new Client({
-    intents: ["MessageContent", "GuildMessages", "GuildMembers"],
-});
-
-await discord.login(process.env.TOKEN!);
-
-const guild = await discord.guilds.fetch(process.env.GUILD_ID!);
-
-await guild.members.fetch();
-
-const bridge = (await guild.channels.fetch(
-    process.env.CHANNEL_ID!
-)) as TextChannel;
-
-const commands = new Collection<
-    string,
-    {
-        execute: (ctx: CommandContext) => void;
-    }
->();
-
-const patterns = new Collection<
-    string,
-    {
-        execute: (ctx: PatternContext) => void;
-    }
->();
-
-await readdir(join(ROOT_DIR, "commands"))
-    .then((files) =>
-        Promise.all(
-            files.map((f) => import(join(ROOT_DIR, "commands", f)))
-        ).then((mods) => mods.map((m, i) => [files[i], m] as const))
-    )
-    .then((mods) => {
-        mods.forEach(([name, mod]) => {
-            commands.set(name.split(".").slice(0, -1).join("."), {
-                execute: mod.default,
-            });
-        });
-    });
-
-await readdir(join(ROOT_DIR, "patterns"))
-    .then((files) =>
-        Promise.all(
-            files.map((f) => import(join(ROOT_DIR, "patterns", f)))
-        ).then((mods) => mods.map((m, i) => [files[i], m] as const))
-    )
-    .then((mods) => {
-        mods.forEach(([name, mod]) => {
-            patterns.set(name.split(".").slice(0, -1).join("."), {
-                execute: mod.default,
-            });
-        });
-    });
-
-await bridge.send("Starting bridge...");
+const rl = createInterface({ input: process.stdin, output: process.stdout });
 
 const mineflayer = createBot({
     host: "mc.hypixel.net",
     version: "1.8.9",
     auth: "microsoft",
     username: process.env.USERNAME!,
-    password: process.env.PASSWORD!,
     defaultChatPatterns: false,
     checkTimeoutInterval: 30000,
-})
-    .on("spawn", async () => {
-        await mineflayer.waitForChunksToLoad();
+});
 
-        await mineflayer.waitForTicks(12);
+mineflayer.on("spawn", async () => {
+    await mineflayer.waitForChunksToLoad();
 
-        await bridge.send("Connected to Hypixel!");
+    await mineflayer.waitForTicks(12);
 
-        mineflayer.chat("/chat g");
-    })
-    .on("message", async (message) => {
-        if (message.extra?.length === 100) return;
+    mineflayer.chat("/chat a");
 
-        const raw = message.toString().trim();
+    rl.addListener("line", (line) => {
+        mineflayer.chat(line);
+    });
+});
 
-        if (raw.includes("Woah there, slow down!"))
-            await mineflayer.waitForTicks(200);
+const INVITE_REGEX =
+    /^(\[.*\]\s*)?([\w]{2,17}).*? has invited you to join their party!$/m;
 
-        console.log(message.toAnsi());
+const queue: {
+    name: string;
+    expires: number;
+}[] = [];
 
-        PING_ON_JOIN_NOTIFICATIONS.forEach((exec, condition) => {
-            if (condition(raw)) {
-                exec();
+mineflayer.on("message", async (message) => {
+    if (message.extra?.length === 100) return;
 
-                PING_ON_JOIN_NOTIFICATIONS.delete(condition);
-            }
-        });
+    const raw = message.toString().trim();
 
-        patterns.forEach((pattern, key) => {
-            const regex = CONSTANTS[key as keyof typeof CONSTANTS];
+    if (raw.includes("Woah there, slow down!"))
+        await mineflayer.waitForTicks(200);
 
-            if (!(regex instanceof RegExp))
-                throw new TypeError("Pattern file uses an invalid name.");
+    console.log(message.toAnsi());
 
-            const matches = raw.match(regex);
+    if (INVITE_REGEX.test(raw)) {
+        const [, , name] = raw.match(INVITE_REGEX) ?? [];
 
-            if (matches) {
-                const args = Array.from(matches).slice(1);
+        queue.push({ name, expires: Date.now() + 1000 * (60 - 1) });
+    }
+});
 
-                pattern.execute({ message, args, bridge, discord, mineflayer });
+type ChatMessage = Parameters<
+    Parameters<typeof mineflayer.on<"message">>[1]
+>[0];
+
+async function waitForMessage(pattern: string | RegExp, timeout: number) {
+    return new Promise<ChatMessage | undefined>((resolve) => {
+        setTimeout(resolve, timeout, undefined);
+
+        mineflayer.on("message", async (message) => {
+            try {
+                const content = message.toString();
+
+                if (
+                    (typeof pattern === "string" &&
+                        content.includes(pattern)) ||
+                    (pattern instanceof RegExp && pattern.test(content))
+                ) {
+                    return resolve(message);
+                }
+            } catch {
+                return resolve(undefined);
             }
         });
     });
+}
 
-discord.on("messageCreate", async (message) => {
-    if (
-        !message.guild ||
-        message.channel.type !== ChannelType.GuildText ||
-        message.author.bot ||
-        message.author.id === discord.user!.id ||
-        message.channel.id !== process.env.CHANNEL_ID!
-    )
-        return;
+for await (const _ of {
+    [Symbol.asyncIterator]() {
+        return {
+            async next() {
+                await new Promise((resolve) => setTimeout(resolve, 250));
 
-    message.content = message.content.trim();
+                return Promise.resolve({ value: undefined });
+            },
+        };
+    },
+}) {
+    const job = queue.shift();
 
-    if (message.content.startsWith("$")) {
-        const [key, ...args] = message.content.slice(1).split(/\s+/);
+    task: if (job && Date.now() < job.expires) {
+        mineflayer.chat(`/p accept ${job.name}`);
 
-        const command = commands.get(key);
-
-        if (!command) return void bridge.send("Unknown command.");
-
-        return command.execute({ message, args, bridge, discord, mineflayer });
-    }
-
-    if (message.attachments.size) {
-        const links = await Promise.all(
-            message.attachments.map((a) => {
-                if (a.attachment instanceof Stream) return undefined;
-
-                return IMGUR.upload({ image: a.attachment }).then(
-                    (r) => r.data.link
-                );
-            })
+        const joined = await waitForMessage(
+            new RegExp(
+                `^You have joined (\\[.*\\]\\s*)?${job.name}'s party!$`,
+                "m"
+            ),
+            1000
         );
 
-        message.content +=
-            (message.content ? " " : "") + links.filter(Boolean).join(" ");
-    }
+        if (!joined) break task;
 
-    const chunks = discordMessageAsPlainText(message);
+        await mineflayer.waitForTicks(12);
 
-    for (const chunk of chunks) {
-        mineflayer.chat(chunk);
-
-        await new Promise((resolve) =>
-            setTimeout(resolve, Math.floor(Math.random() * 50) + 200)
+        mineflayer.chat(
+            "/pc waiting for transfer... you have 10 seconds to do so"
         );
+
+        const transferred = await waitForMessage(
+            new RegExp(
+                `^The party was transferred to \\[MVP\\+\\+\\] ${process.env
+                    .USERNAME!}`,
+                "m"
+            ),
+            10000
+        );
+
+        if (!transferred) {
+            mineflayer.chat("/pc time's up");
+
+            await mineflayer.waitForTicks(12);
+
+            mineflayer.chat("/p leave");
+
+            break task;
+        }
+
+        await mineflayer.waitForTicks(12);
+
+        mineflayer.chat("/p private");
+
+        await mineflayer.waitForTicks(12);
+
+        mineflayer.chat(
+            "/pc use the command '$play <game>' whenever you are ready - you have 15 seconds"
+        );
+
+        const playcmd = new RegExp(
+            `^Party > (\\[.*\\]\\s*)?${job.name}: \\$play (blitz_solo_normal|blitz_teams_normal|solo_normal|solo_insane|teams_normal|teams_insane|mega_normal|mega_doubles|tnt_tntrun|tnt_pvprun|tnt_bowspleef|tnt_tntag|tnt_capture|bedwars_eight_one|bedwars_eight_two|bedwars_four_three|bedwars_four_four|bedwars_two_four|build_battle_solo_normal|build_battle_teams_normal||build_battle_solo_pro|build_battle_guess_the_build)`
+        );
+
+        const ready = await waitForMessage(playcmd, 15000);
+
+        if (!ready) {
+            mineflayer.chat("/pc time's up");
+
+            await mineflayer.waitForTicks(12);
+
+            mineflayer.chat("/p leave");
+
+            break task;
+        }
+
+        const [, , game] = ready.toString().match(playcmd) ?? [];
+
+        mineflayer.chat(`/play ${game}`);
+
+        await mineflayer.waitForTicks(12);
+
+        mineflayer.chat(`/pc have fun`);
+
+        await mineflayer.waitForTicks(12);
+
+        mineflayer.chat(`/l`);
+
+        await mineflayer.waitForTicks(12);
+
+        mineflayer.chat(`/p leave`);
     }
-});
+}

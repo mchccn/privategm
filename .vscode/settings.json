@@ -25,5 +25,6 @@
         "terminal.ansiRed": "#AA0000",
         "terminal.ansiWhite": "#AAAAAA",
         "terminal.ansiYellow": "#FFAA00"
-    }
+    },
+    "typescript.tsdk": "node_modules/typescript/lib"
 }
