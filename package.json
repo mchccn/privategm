@@ -8,7 +8,9 @@
     "engines": {
         "node": ">=18.13.0"
     },
-    "scripts": {},
+    "scripts": {
+        "build": "tsc"
+    },
     "keywords": [],
     "author": "kelly <cursors.owo.uwu@gmail.com>",
     "license": "MIT",
