@@ -54,7 +54,7 @@ type ChatMessage = Parameters<
     Parameters<typeof mineflayer.on<"message">>[1]
 >[0];
 
-async function waitForMessage(pattern: string | RegExp, timeout: number) {
+async function waitForMessage(pattern: RegExp, timeout: number) {
     return new Promise<ChatMessage | undefined>((resolve) => {
         setTimeout(resolve, timeout, undefined);
 
@@ -62,11 +62,7 @@ async function waitForMessage(pattern: string | RegExp, timeout: number) {
             try {
                 const content = message.toString();
 
-                if (
-                    (typeof pattern === "string" &&
-                        content.includes(pattern)) ||
-                    (pattern instanceof RegExp && pattern.test(content))
-                ) {
+                if (pattern instanceof RegExp && pattern.test(content)) {
                     return resolve(message);
                 }
             } catch {
